@@ -108,34 +108,68 @@ async function syncStatusToSupabase({ orderId, awb, storeStatus, eta, deliveredA
   } catch (err) { return { synced: false, error: err.message }; }
 }
 
-exports.handler = async (event) => {
+// VERCEL HANDLER
+export default async function handler(req, res) {
+  // CORS Headers
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader('Access-Control-Allow-Headers', 'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    return res.status(405).json({ status: 'error', message: 'Method not allowed' });
+  }
+
   const correlationId = `sft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'X-Correlation-Id': correlationId, 'Cache-Control': 'no-store' };
-
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
-  if (event.httpMethod !== 'GET' && event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ status: 'error', message: 'Method not allowed' }) };
-
-  let input = {};
-  try { input = event.httpMethod === 'GET' ? (event.queryStringParameters || {}) : JSON.parse(event.body || '{}'); } catch (err) { return { statusCode: 400, headers, body: JSON.stringify({ status: 'error', message: 'Invalid input' }) }; }
+  
+  // Vercel parses query and body automatically
+  const input = req.method === 'GET' ? req.query : req.body;
 
   const awb = normaliseAwb(input.awb || input.awb_number || input.tracking_id || input.waybill);
   const orderId = input.orderId || input.order_id || null;
   const apiKey = input.apiKey || input.api_key || DEFAULT_API_KEY;
   const shouldSync = input.sync !== 'false' && input.sync !== false;
 
-  if (!awb) return { statusCode: 400, headers, body: JSON.stringify({ status: 'error', message: 'Missing required parameter: awb' }) };
-  if (!apiKey) return { statusCode: 400, headers, body: JSON.stringify({ status: 'error', message: 'Shadowfax API key not configured. Set it in Netlify env vars.' }) };
+  if (!awb) return res.status(400).json({ status: 'error', message: 'Missing required parameter: awb' });
+  if (!apiKey) return res.status(400).json({ status: 'error', message: 'Shadowfax API key not configured. Set it in Vercel env vars.' });
 
   let raw;
-  try { raw = await callShadowfaxTrack(awb, apiKey); } catch (err) { return { statusCode: 502, headers, body: JSON.stringify({ status: 'error', message: err.message || 'Failed to track shipment', details: err.body || null, correlationId }) }; }
+  try { 
+    raw = await callShadowfaxTrack(awb, apiKey); 
+  } catch (err) { 
+    return res.status(502).json({ status: 'error', message: err.message || 'Failed to track shipment', details: err.body || null, correlationId }); 
+  }
 
   const normalised = normaliseShadowfaxResponse(raw);
   if (!normalised.awb) normalised.awb = awb;
 
   let sync = { skipped: true };
   if (shouldSync && normalised.storeStatus && (orderId || normalised.orderId)) {
-    sync = await syncStatusToSupabase({ orderId: orderId || normalised.orderId, awb: normalised.awb, storeStatus: normalised.storeStatus, eta: normalised.eta, deliveredAt: normalised.deliveredAt });
+    sync = await syncStatusToSupabase({ 
+      orderId: orderId || normalised.orderId, 
+      awb: normalised.awb, 
+      storeStatus: normalised.storeStatus, 
+      eta: normalised.eta, 
+      deliveredAt: normalised.deliveredAt 
+    });
   }
 
-  return { statusCode: 200, headers, body: JSON.stringify({ status: 'success', awb: normalised.awb, orderId: orderId || normalised.orderId || null, rawStatus: normalised.rawStatus, storeStatus: normalised.storeStatus, statusLabel: normalised.statusLabel, courier: normalised.courier, eta: normalised.eta, deliveredAt: normalised.deliveredAt, currentLocation: normalised.currentLocation, checkpoints: normalised.checkpoints, sync, correlationId }) };
-};
+  return res.status(200).json({
+    status: 'success',
+    awb: normalised.awb,
+    orderId: orderId || normalised.orderId || null,
+    rawStatus: normalised.rawStatus,
+    storeStatus: normalised.storeStatus,
+    statusLabel: normalised.statusLabel,
+    courier: normalised.courier,
+    eta: normalised.eta,
+    deliveredAt: normalised.deliveredAt,
+    currentLocation: normalised.currentLocation,
+    checkpoints: normalised.checkpoints,
+    sync,
+    correlationId
+  });
+}

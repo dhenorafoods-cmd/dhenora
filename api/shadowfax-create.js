@@ -54,16 +54,25 @@ function buildShadowfaxPayload({ orderId, customer, items, total, pincode, picku
   };
 }
 
-exports.handler = async (event) => {
+// VERCEL HANDLER
+export default async function handler(req, res) {
+  // CORS Headers
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  if (req.method !== 'POST') {
+    return res.status(405).json({ status: 'error', message: 'Method not allowed' });
+  }
+
   const correlationId = `sfx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'X-Correlation-Id': correlationId };
-
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
-  if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ status: 'error', message: 'Method not allowed' }) };
-
-  let body;
-  try { body = JSON.parse(event.body || '{}'); } catch (err) { return { statusCode: 400, headers, body: JSON.stringify({ status: 'error', message: 'Invalid JSON body' }) }; }
-
+  
+  // Vercel parses the JSON body automatically
+  const body = req.body || {};
   const { orderId, customer = {}, items = [], total = 0, pincode = '', shadowfaxConfig = {}, isCod = false, codAmount = 0 } = body;
 
   const apiKey = shadowfaxConfig.apiKey || process.env.SHADOWFAX_API_KEY;
@@ -72,7 +81,7 @@ exports.handler = async (event) => {
   const gstin = shadowfaxConfig.gstin || process.env.SHADOWFAX_GSTIN;
   const registeredPhone = shadowfaxConfig.registeredPhone || process.env.SHADOWFAX_REGISTERED_PHONE;
 
-  if (!apiKey) return { statusCode: 400, headers, body: JSON.stringify({ status: 'error', message: 'Shadowfax API key not configured' }) };
+  if (!apiKey) return res.status(400).json({ status: 'error', message: 'Shadowfax API key not configured' });
 
   const pickup = {
     name: shadowfaxConfig.pickupName || process.env.SHADOWFAX_PICKUP_NAME || 'Dhenora Warehouse',
@@ -84,26 +93,36 @@ exports.handler = async (event) => {
   };
 
   const payload = buildShadowfaxPayload({ orderId, customer, items, total, pincode, pickup, isCod, codAmount });
-  payload.credits_key = creditsKey; payload.gstin = gstin; payload.registered_phone = registeredPhone;
+  payload.credits_key = creditsKey; 
+  payload.gstin = gstin; 
+  payload.registered_phone = registeredPhone;
 
   const url = `${SHADOWFAX_API_BASE}${CREATE_ENDPOINT}`;
-  const requestOptions = { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'x-api-key': apiKey, Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(payload) };
+  const requestOptions = { 
+    method: 'POST', 
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'x-api-key': apiKey, Authorization: `Bearer ${apiKey}` }, 
+    body: JSON.stringify(payload) 
+  };
 
   let response;
-  try { response = await fetchWithTimeout(url, requestOptions); } catch (err) { return { statusCode: 502, headers, body: JSON.stringify({ status: 'error', message: 'Failed to reach Shadowfax', details: err.message, correlationId }) }; }
+  try { 
+    response = await fetchWithTimeout(url, requestOptions); 
+  } catch (err) { 
+    return res.status(502).json({ status: 'error', message: 'Failed to reach Shadowfax', details: err.message, correlationId }); 
+  }
 
   const data = await safeJson(response);
 
   if (!response.ok) {
     const message = data.message || data.error || data.description || `Shadowfax returned ${response.status}`;
-    return { statusCode: 502, headers, body: JSON.stringify({ status: 'error', message, details: data, correlationId }) };
+    return res.status(502).json({ status: 'error', message, details: data, correlationId });
   }
 
   const awb = data.awb || data.awb_number || data.tracking_id || data.waybill || data.data?.awb || data.data?.awb_number || '';
   const trackingUrl = data.tracking_url || data.trackingUrl || (awb ? `https://track.shadowfax.in/track/${awb}` : '');
   const courier = data.courier || data.courier_name || 'Shadowfax';
 
-  if (!awb) return { statusCode: 502, headers, body: JSON.stringify({ status: 'error', message: 'Shadowfax did not return an AWB', details: data, correlationId }) };
+  if (!awb) return res.status(502).json({ status: 'error', message: 'Shadowfax did not return an AWB', details: data, correlationId });
 
-  return { statusCode: 200, headers, body: JSON.stringify({ status: 'success', orderId, awb, courier, trackingUrl, raw: data, correlationId }) };
-};
+  return res.status(200).json({ status: 'success', orderId, awb, courier, trackingUrl, raw: data, correlationId });
+}
